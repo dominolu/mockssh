@@ -1,0 +1,12 @@
+{
+  "network": {
+    "host": "0.0.0.0",
+    "port": 22
+  },
+  "files": {
+    "firebase_credentials": "firebase-credentials.json",
+    "banned_ips": "banned_ips.txt"
+  },
+  "firebase_url": "https://mockssh-default-rtdb.asia-southeast1.firebasedatabase.app",
+  "last_sync_id":0
+}

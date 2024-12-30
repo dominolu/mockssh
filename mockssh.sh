@@ -1,64 +1,60 @@
 #!/bin/bash
+# 配置
+SCRIPT_PATH="mockssh.py"  # Python 脚本路径
+LOG_FILE="/tmp/mockssh.log"                # 日志文件路径
 
-APP_NAME="Mockssh"
-PID_FILE="/tmp/${APP_NAME}.pid"
-LOG_FILE="/tmp/${APP_NAME}.log"
-PYTHON_SCRIPT="$(pwd)/mockssh.py"
-
-check_pid() {
-    if [ -f $PID_FILE ]; then
-        PID=$(cat $PID_FILE)
-        if ps -p $PID > /dev/null 2>&1; then
-            return 0
-        fi
-    fi
-    return 1
+get_pid() {
+    # 使用 ps 查找脚本的 PID
+    echo $(ps aux | grep "$SCRIPT_PATH" | grep -v "grep" | awk '{print $2}')
 }
 
 start() {
-    echo "Starting $APP_NAME..."
-    if check_pid; then
-        echo "$APP_NAME is already running with PID $(cat $PID_FILE)"
-        return 1
+    # 检查脚本是否已经运行
+    PID=$(get_pid)
+    if [ -n "$PID" ]; then
+        echo "Script is already running with PID $PID."
+        exit 1
     fi
     
-    # 启动 Python 脚本
-    python3 $PYTHON_SCRIPT >> $LOG_FILE 2>&1 &
-    PID=$!
-    echo $PID > $PID_FILE
-    echo "$APP_NAME started with PID $PID"
-    echo "Logs are being written to $LOG_FILE"
+    # 启动脚本
+    echo "Starting script..."
+    nohup python3 -u "$SCRIPT_PATH" > /dev/null 2>&1 < /dev/null &
+    echo "Script started with PID $!."
+    echo "Your can check the log with: tail -f mockssh.log"
+    sleep 1  # 给程序一点时间来启动
 }
 
 stop() {
-    echo "Stopping $APP_NAME..."
-    if check_pid; then
-        PID=$(cat $PID_FILE)
-        kill $PID
-        rm -f $PID_FILE
-        echo "$APP_NAME stopped"
-    else
-        echo "$APP_NAME is not running"
-        return 1
+    # 获取运行中的脚本 PID
+    PID=$(get_pid)
+    if [ -z "$PID" ]; then
+        echo "Script is not running."
+        exit 1
     fi
+
+    # 停止脚本
+    echo "Stopping script with PID $PID..."
+    kill "$PID"
+    echo "Script stopped."
 }
 
 restart() {
-    echo "Restarting $APP_NAME..."
     stop
-    sleep 2
+    sleep 1
     start
 }
 
 status() {
-    if check_pid; then
-        echo "$APP_NAME is running with PID $(cat $PID_FILE)"
-        echo "Log file: $LOG_FILE"
+    # 检查脚本状态
+    PID=$(get_pid)
+    if [ -n "$PID" ]; then
+        echo "Script is running with PID $PID."
     else
-        echo "$APP_NAME is not running"
+        echo "Script is not running."
     fi
 }
 
+# 检查命令
 case "$1" in
     start)
         start
@@ -77,5 +73,3 @@ case "$1" in
         exit 1
         ;;
 esac
-
-exit 0

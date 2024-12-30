@@ -10,31 +10,37 @@ from firebase_admin import db
 import threading
 import fcntl
 import time
+from loguru import logger
 
-HOST = "0.0.0.0"  # 监听所有网络接口
-PORT = 22       # 模拟 SSH 的端口
-LOG_FILE = "ssh_baned_ip.txt"
+# 配置logger
+logger.add("mockssh.log", rotation="500 MB", level="INFO")
+
+# 基础配置
 CONFIG_FILE = "config.json"
-FIREBASE_CRED_FILE = "firebase-credentials.json"
-BANNED_IPS_FILE = "banned_ips.txt"  # 新增封禁IP文件
+BANNED_IPS_FILE = "banned_ips.txt"
+
 banned_ips=set()
 
 def load_banned_ips():
     """从文件加载已封禁的IP列表"""
     try:
-        if os.path.exists(BANNED_IPS_FILE):
-            with open(BANNED_IPS_FILE, 'r') as f:
+        config = load_config()
+        banned_ips_file = config["files"]["banned_ips"]
+        if os.path.exists(banned_ips_file):
+            with open(banned_ips_file, 'r') as f:
                 return set(line.strip() for line in f if line.strip())
         return set()
     except Exception as e:
-        print(f"Error loading banned IPs: {e}")
+        logger.error(f"Error loading banned IPs: {e}")
         return set()
 
 def save_banned_ips(new_ips):
     """保存封禁的IP到文件"""
     global banned_ips
     try:
-        with open(BANNED_IPS_FILE, 'a') as f:
+        config = load_config()
+        banned_ips_file = config["files"]["banned_ips"]
+        with open(banned_ips_file, 'a') as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             try:
                 for ip in new_ips:
@@ -45,36 +51,44 @@ def save_banned_ips(new_ips):
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
         return True
     except Exception as e:
-        print(f"Error saving banned IPs: {e}")
+        logger.error(f"Error saving banned IPs: {e}")
         return False
 
 def init_firebase():
     """初始化 Firebase 连接"""
     try:
+        cfg=load_config()
+        FIREBASE_CRED_FILE = cfg["files"]["firebase_credentials"]
+        URL=cfg["firebase_url"]
         cred = credentials.Certificate(FIREBASE_CRED_FILE)
         firebase_admin.initialize_app(cred, {
-            'databaseURL': 'https://mockssh-default-rtdb.asia-southeast1.firebasedatabase.app'
+            'databaseURL': URL
         })
-        print("Firebase initialized successfully")
+        logger.info("Firebase initialized successfully")
     except Exception as e:
-        print(f"Failed to initialize Firebase: {e}")
+        logger.error(f"Failed to initialize Firebase: {e}")
         raise
 
 def load_config():
     """加载本地配置"""
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, 'r') as f:
-            config = json.load(f)
-            if 'last_sync_id' not in config:
-                config['last_sync_id'] = 0
-            return config
-    return {"last_sync_id": 0}
+            return json.load(f)
+    return {
+        "network": {
+            "host": "0.0.0.0",
+            "port": 22
+        },
+        "files": {
+            "firebase_credentials": "firebase-credentials.json",
+            "banned_ips": "banned_ips.txt"
+        },
+        "firebase_url": "Your Firebase Realtime Database URL",
+        "last_sync_id": 0
+    }
 
 def save_config(config):
     """保存配置到本地"""
-    # 确保不包含 banned_ips
-    if "banned_ips" in config:
-        del config["banned_ips"]
     with open(CONFIG_FILE, 'w') as f:
         json.dump(config, f)
 
@@ -92,7 +106,7 @@ def get_banned_ips():
                 banned = line.split(':')[1].strip().split()
         return set(banned)
     except Exception as e:
-        print(f"Error getting banned IPs: {e}")
+        logger.error(f"Error getting banned IPs: {e}")
         return set()
 
 def sync_ips(newip):
@@ -138,7 +152,7 @@ def sync_ips(newip):
         return False
         
     except Exception as e:
-        print(f"Error syncing IPs: {e}")
+        logger.error(f"Error syncing IPs: {e}")
         return False
 
 def ban_ip(ip):
@@ -147,29 +161,29 @@ def ban_ip(ip):
         subprocess.run(["fail2ban-client", "set", "sshd", "banip", ip],
                         check=True,
                         capture_output=True)
-        print(f"Banned IP: {ip}")
+        logger.info(f"Banned IP: {ip}")
         return True
     except Exception as e:
-        print(f"Failed to ban IP {ip}: {e}")
+        logger.error(f"Failed to ban IP {ip}: {e}")
     return False
 
 def log_access(ip, error):
     """记录访问日志并处理可疑IP"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_entry = f"{timestamp} - IP: {ip} - Error: {error}"
-    print(log_entry.strip())
+    logger.info(log_entry.strip())
     
     try:
         # 先确保本地安全
         if not ban_ip(ip):
-            print(f"Warning: Failed to ban IP locally: {ip}")
+            logger.warning(f"Warning: Failed to ban IP locally: {ip}")
             
         # 同步到云端，失败不影响本地安全
         if not sync_ips(ip):
-            print(f"Warning: Failed to sync IP to cloud: {ip}")
+            logger.warning(f"Warning: Failed to sync IP to cloud: {ip}")
             
     except Exception as e:
-        print(f"Critical error in log_access: {e}")
+        logger.error(f"Critical error in log_access: {e}")
 
 
 def handle_client(client_socket, client_address):
@@ -181,18 +195,15 @@ def handle_client(client_socket, client_address):
         
         # 2. 接收客户端的协议标识
         client_data = client_socket.recv(1024).decode("utf-8").strip()
-        #print(f"Received from client: {client_data}")
 
         # （这里可以简单化，不发送真实的密钥交换数据）
         client_socket.sendall(b"SSH-2.0-Server-Kex-Message\r\n")
         data = client_socket.recv(1024)
-        #print(data)
         client_socket.sendall(b"Password authentication failed\r\n")
         log_access(ip,client_data.split("\n")[0])
 
-
     except Exception as e:
-        print(f"Error handling client {client_address}: {e}")
+        logger.error(f"Error handling client {client_address}: {e}")
     finally:
         client_socket.close()
 
@@ -200,23 +211,26 @@ def start_server():
     """启动模拟 SSH 服务"""
     init_firebase()
     global banned_ips
+    cfg=load_config()
+    HOST = cfg["network"]["host"]
+    PORT = cfg["network"]["port"]
     banned_ips=load_banned_ips()
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind((HOST, PORT))
+    server.bind((HOST,PORT))
     server.listen(5)
-    print(f"Mock SSH server listening on {HOST}:{PORT}")
+    logger.info(f"Mock SSH server listening on {HOST}:{PORT}")
 
     try:
         while True:
             client_socket, client_address = server.accept()
-            print(f"Connection received from {client_address[0]}:{client_address[1]}")
+            logger.info(f"Connection received from {client_address[0]}:{client_address[1]}")
             client_handler = threading.Thread(
                 target=handle_client,
                 args=(client_socket, client_address)
             )
             client_handler.start()
     except KeyboardInterrupt:
-        print("Shutting down server...")
+        logger.info("Shutting down server...")
     finally:
         server.close()
 
