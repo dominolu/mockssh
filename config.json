@@ -7,6 +7,6 @@
     "firebase_credentials": "firebase-credentials.json",
     "banned_ips": "banned_ips.txt"
   },
-  "firebase_url": "https://mockssh-default-rtdb.asia-southeast1.firebasedatabase.app",
+  "firebase_url": "Your Firebase Realtime Database URL",
   "last_sync_id":0
 }
