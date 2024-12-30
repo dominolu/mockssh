@@ -1,131 +1,176 @@
 import socket
-import threading
+import datetime
 from datetime import datetime
 import os
-import traceback
 import subprocess
-import re
+import json
+import firebase_admin
+from firebase_admin import credentials
+from firebase_admin import db
+import threading
+import fcntl
+import time
 
 HOST = "0.0.0.0"  # 监听所有网络接口
 PORT = 22       # 模拟 SSH 的端口
 LOG_FILE = "ssh_baned_ip.txt"
+CONFIG_FILE = "config.json"
+FIREBASE_CRED_FILE = "firebase-credentials.json"
+BANNED_IPS_FILE = "banned_ips.txt"  # 新增封禁IP文件
+banned_ips=set()
 
-def git_commit_and_push(file_path, commit_message="Update banned IP list"):
-    """
-    将文件提交到git仓库并推送到远程
-    
-    Args:
-        file_path (str): 要提交的文件路径
-        commit_message (str): 提交信息
-        
-    Returns:
-        bool: 操作是否成功
-        
-    Raises:
-        Exception: 当git操作失败时抛出，包含详细的错误信息
-    """
-    if not os.path.exists(file_path):
-        raise Exception(f"File not found: {file_path}")
-        
+def load_banned_ips():
+    """从文件加载已封禁的IP列表"""
     try:
-        # 添加文件到暂存区
-        result = subprocess.run(["git", "add", file_path], 
-                              check=True, 
-                              capture_output=True, 
-                              text=True)
-        if result.stderr:
-            raise Exception(f"Warning during git add: {result.stderr}")
-            
-        # 提交更改
-        result = subprocess.run(["git", "commit", "-m", commit_message], 
-                              check=True, 
-                              capture_output=True, 
-                              text=True)
-        if result.stderr and "nothing to commit" not in result.stderr:
-            raise Exception(f"Warning during git commit: {result.stderr}")
-            
-        # 推送到远程
-        result = subprocess.run(["git", "push"], 
-                              check=True, 
-                              capture_output=True, 
-                              text=True)
-        if result.stderr and "Everything up-to-date" not in result.stderr:
-            raise Exception(f"Warning during git push: {result.stderr}")
-            
-        print("Successfully committed and pushed changes to repository")
-        return True
-        
-    except subprocess.CalledProcessError as e:
-        error_msg = f"Git operation failed: {e.stderr if e.stderr else str(e)}"
-        if e.cmd:
-            error_msg += f"\nFailed command: {' '.join(e.cmd)}"
-        print(error_msg)
-        return False
+        if os.path.exists(BANNED_IPS_FILE):
+            with open(BANNED_IPS_FILE, 'r') as f:
+                return set(line.strip() for line in f if line.strip())
+        return set()
     except Exception as e:
-        print(f"Unexpected error: {str(e)}")
-        return False
-
-def extract_ips_from_log(log_content):
-    """从日志内容中提取所有 IP 地址"""
-    ip_pattern = r'\b(?:\d{1,3}\.){3}\d{1,3}\b'
-    return set(re.findall(ip_pattern, log_content))
-
-def sync_and_compare_logs():
-    """
-    同步远程日志并比较差异
-    
-    Returns:
-        set: 新增的 IP 地址集合
-    """
-    try:
-        # 保存当前日志内容
-        current_ips = set()
-        if os.path.exists(LOG_FILE):
-            with open(LOG_FILE, 'r') as f:
-                current_ips = extract_ips_from_log(f.read())
-        
-        # 获取远程更新
-        subprocess.run(["git", "fetch", "origin"], check=True, capture_output=True)
-        subprocess.run(["git", "reset", "--hard", "origin/main"], check=True, capture_output=True)
-        
-        # 读取更新后的文件内容
-        updated_ips = set()
-        if os.path.exists(LOG_FILE):
-            with open(LOG_FILE, 'r') as f:
-                updated_ips = extract_ips_from_log(f.read())
-        
-        # 返回新增的 IP
-        return updated_ips - current_ips
-    except Exception as e:
-        print(f"Error syncing logs: {str(e)}")
+        print(f"Error loading banned IPs: {e}")
         return set()
 
+def save_banned_ips(new_ips):
+    """保存封禁的IP到文件"""
+    global banned_ips
+    try:
+        with open(BANNED_IPS_FILE, 'a') as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                for ip in new_ips:
+                    f.write(f"{ip}\n")
+                    banned_ips.add(ip)
+                f.flush()
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        return True
+    except Exception as e:
+        print(f"Error saving banned IPs: {e}")
+        return False
+
+def init_firebase():
+    """初始化 Firebase 连接"""
+    try:
+        cred = credentials.Certificate(FIREBASE_CRED_FILE)
+        firebase_admin.initialize_app(cred, {
+            'databaseURL': 'https://mockssh-default-rtdb.asia-southeast1.firebasedatabase.app'
+        })
+        print("Firebase initialized successfully")
+    except Exception as e:
+        print(f"Failed to initialize Firebase: {e}")
+        raise
+
+def load_config():
+    """加载本地配置"""
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r') as f:
+            config = json.load(f)
+            if 'last_sync_id' not in config:
+                config['last_sync_id'] = 0
+            return config
+    return {"last_sync_id": 0}
+
+def save_config(config):
+    """保存配置到本地"""
+    # 确保不包含 banned_ips
+    if "banned_ips" in config:
+        del config["banned_ips"]
+    with open(CONFIG_FILE, 'w') as f:
+        json.dump(config, f)
+
+def get_banned_ips():
+    """获取当前 fail2ban 已封禁的 IP"""
+    try:
+        result = subprocess.run(["fail2ban-client", "status", "sshd"], 
+                              capture_output=True, 
+                              text=True,
+                              check=True)
+        # 解析输出获取已封禁 IP
+        banned = []
+        for line in result.stdout.split('\n'):
+            if "Banned IP list:" in line:
+                banned = line.split(':')[1].strip().split()
+        return set(banned)
+    except Exception as e:
+        print(f"Error getting banned IPs: {e}")
+        return set()
+
+def sync_ips(newip):
+    """同步新的 IP 并更新 fail2ban"""
+    global banned_ips
+    try:
+        config = load_config()
+        last_id = config.get("last_sync_id", 0)
+        
+        # 获取 Firebase 中的新记录
+        ref = db.reference('banned_ips')
+        new_records = ref.order_by_child('id').start_at(last_id + 1).get() or {}
+        
+        # 处理新记录
+        new_banned_ips = set()
+        max_id = last_id
+        
+        for key, record in new_records.items():
+            ip = record.get('ip')
+            record_id = record.get('id')
+            if ip and ip not in banned_ips:
+                if ban_ip(ip):
+                    new_banned_ips.add(ip)
+            if record_id:
+                max_id = max(max_id, record_id)
+        
+        # 提交 newip 到 Firebase，确保 ID 递增
+        new_id = max_id + 1
+        timestamp = int(time.time())
+        new_record = {
+            'ip': newip,
+            'id': new_id,
+            'timestamp': timestamp
+        }
+        ref.push().set(new_record)
+        
+        # 更新配置和本地文件
+        config["last_sync_id"] = new_id
+        new_banned_ips.add(newip)
+        if save_banned_ips(new_banned_ips):
+            save_config(config)
+            return True
+        return False
+        
+    except Exception as e:
+        print(f"Error syncing IPs: {e}")
+        return False
+
+def ban_ip(ip):
+    """封禁单个 IP"""
+    try:
+        subprocess.run(["fail2ban-client", "set", "sshd", "banip", ip],
+                        check=True,
+                        capture_output=True)
+        print(f"Banned IP: {ip}")
+        return True
+    except Exception as e:
+        print(f"Failed to ban IP {ip}: {e}")
+    return False
+
 def log_access(ip, error):
-    """记录访问日志到文件"""
+    """记录访问日志并处理可疑IP"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_entry = f"[{timestamp}] {ip}: {error}\n"
+    log_entry = f"{timestamp} - IP: {ip} - Error: {error}"
     print(log_entry.strip())
     
     try:
-        # 同步并检查新增 IP
-        new_ips = sync_and_compare_logs()
-        for new_ip in new_ips:
-            try:
-                subprocess.run(["fail2ban-client", "set", "sshd", "banip", new_ip], 
-                             check=True, capture_output=True)
-                print(f"Added new IP to fail2ban: {new_ip}")
-            except subprocess.CalledProcessError as e:
-                print(f"Failed to ban IP {new_ip}: {e.stderr}")
-        
-        # 追加新的日志条目
-        with open(LOG_FILE, "a") as f:
-            f.write(log_entry)
+        # 先确保本地安全
+        if not ban_ip(ip):
+            print(f"Warning: Failed to ban IP locally: {ip}")
             
-        # 提交并推送更改
-        git_commit_and_push(LOG_FILE)
-        
+        # 同步到云端，失败不影响本地安全
+        if not sync_ips(ip):
+            print(f"Warning: Failed to sync IP to cloud: {ip}")
+            
     except Exception as e:
-        print(f"Error in log_access: {str(e)}")
+        print(f"Critical error in log_access: {e}")
+
 
 def handle_client(client_socket, client_address):
     """处理客户端连接"""
@@ -153,6 +198,9 @@ def handle_client(client_socket, client_address):
 
 def start_server():
     """启动模拟 SSH 服务"""
+    init_firebase()
+    global banned_ips
+    banned_ips=load_banned_ips()
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind((HOST, PORT))
     server.listen(5)
