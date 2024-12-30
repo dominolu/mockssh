@@ -36,6 +36,7 @@ pip3 install -r requirements.txt
 - 下载服务账号密钥文件
 - 将密钥文件重命名为 `firebase-adminsdk.json` 并放在项目根目录
 - 在 Firebase Console 中启用 Realtime Database
+- 将 Realtime Database URL 保存在 `config.json` 中
 - Firebase 规则配置
 在 Firebase Console 中添加以下数据库规则：
 
