@@ -85,11 +85,11 @@ chmod +x mockssh.sh
 
 ### 查看日志
 
-日志文件位置：`/tmp/mockssh.log`
+日志文件位置：`mockssh.log`
 
 查看实时日志：
 ```bash
-tail -f /tmp/mockssh.log
+tail -f mockssh.log
 ```
 
 
