@@ -1,2 +1,2 @@
-firebase-admin==6.2.0
-loguru==0.7.0
+firebase-admin>=6.3.0
+loguru>=0.7.2

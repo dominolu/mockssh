@@ -28,7 +28,7 @@ cd mockssh
 
 2. 安装依赖：
 ```bash
-pip3 install firebase-admin
+pip3 install -r requirements.txt
 ```
 
 3. 配置 Firebase：
@@ -51,7 +51,6 @@ pip3 install firebase-admin
     }
   }
 }
-```
 4. 配置 fail2ban：
 ```bash
 sudo apt-get install fail2ban  # Ubuntu/Debian
@@ -96,9 +95,8 @@ tail -f mockssh.log
 
 ### 自定义配置
 
-可以修改 `mockssh.py` 中的以下参数：
+可以修改 `config.json` 中的以下参数：
 - 监听端口（默认：22）
-- 日志文件路径
 - Firebase 配置路径
 
 ## 注意事项
